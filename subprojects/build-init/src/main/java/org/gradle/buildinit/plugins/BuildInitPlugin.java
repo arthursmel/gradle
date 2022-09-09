@@ -16,10 +16,13 @@
 
 package org.gradle.buildinit.plugins;
 
+import org.apache.commons.io.FileUtils;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
 import org.gradle.api.Task;
+import org.gradle.api.UncheckedIOException;
 import org.gradle.api.internal.project.ProjectInternal;
+import org.gradle.api.internal.tasks.userinput.UserInputHandler;
 import org.gradle.api.logging.Logger;
 import org.gradle.api.plugins.jvm.internal.JvmEcosystemUtilities;
 import org.gradle.api.specs.Spec;
@@ -29,7 +32,12 @@ import org.gradle.internal.file.RelativeFilePathResolver;
 
 import javax.annotation.Nullable;
 import java.io.File;
+import java.io.FileFilter;
+import java.io.IOException;
+import java.util.Arrays;
 import java.util.concurrent.Callable;
+
+import static com.google.common.base.Strings.isNullOrEmpty;
 
 /**
  * The build init plugin.
@@ -51,12 +59,22 @@ public class BuildInitPlugin implements Plugin<Project> {
                 FileDetails buildFileDetails = FileDetails.of(buildFile, resolver);
                 File settingsFile = projectInternal.getGradle().getSettings().getSettingsScript().getResource().getLocation().getFile();
                 FileDetails settingsFileDetails = FileDetails.of(settingsFile, resolver);
+                File projectDir = project.getProjectDir();
+                FileDetails projectDirFileDetails = FileDetails.of(projectDir, resolver);
+
+                String skippedMsg = reasonToSkip(projectDirFileDetails, buildFileDetails, settingsFileDetails);
+                boolean allowFileOverwrite = false;
+                if (!isNullOrEmpty(skippedMsg)) {
+                    UserInputHandler inputHandler = ((ProjectInternal) project).getServices().get(UserInputHandler.class);
+                    allowFileOverwrite = inputHandler.askYesNoQuestion(skippedMsg +
+                        "Allow any existing files in the current directory to be potentially overwritten?", false);
+                }
 
                 initBuild.onlyIf(
-                    "There is no build script or settings script",
-                    new InitBuildOnlyIfSpec(buildFileDetails, settingsFileDetails, initBuild.getLogger())
+                    "There is permission to overwrite any existing files in the project directory",
+                    new InitBuildOnlyIfSpec(allowFileOverwrite, skippedMsg, initBuild.getLogger())
                 );
-                initBuild.dependsOn(new InitBuildDependsOnCallable(buildFileDetails, settingsFileDetails));
+                initBuild.dependsOn(new InitBuildDependsOnCallable(allowFileOverwrite, skippedMsg));
 
                 ProjectInternal.DetachedResolver detachedResolver = projectInternal.newDetachedResolver();
                 initBuild.getProjectLayoutRegistry().getBuildConverter().configureClasspath(
@@ -69,20 +87,19 @@ public class BuildInitPlugin implements Plugin<Project> {
 
     private static class InitBuildOnlyIfSpec implements Spec<Task> {
 
-        private final FileDetails buildFile;
-        private final FileDetails settingsFile;
+        private final boolean allowFileOverwrite;
+        private final String skippedMsg;
         private final Logger logger;
 
-        private InitBuildOnlyIfSpec(FileDetails buildFile, FileDetails settingsFile, Logger logger) {
-            this.buildFile = buildFile;
-            this.settingsFile = settingsFile;
+        private InitBuildOnlyIfSpec(boolean allowFileOverwrite, String skippedMsg, Logger logger) {
+            this.allowFileOverwrite = allowFileOverwrite;
+            this.skippedMsg = skippedMsg;
             this.logger = logger;
         }
 
         @Override
         public boolean isSatisfiedBy(Task element) {
-            String skippedMsg = reasonToSkip(buildFile, settingsFile);
-            if (skippedMsg != null) {
+            if (!allowFileOverwrite && skippedMsg != null) {
                 logger.warn(skippedMsg);
                 return false;
             }
@@ -92,17 +109,18 @@ public class BuildInitPlugin implements Plugin<Project> {
 
     private static class InitBuildDependsOnCallable implements Callable<String> {
 
-        private final FileDetails buildFile;
-        private final FileDetails settingsFile;
+        private final boolean allowFileOverwrite;
 
-        private InitBuildDependsOnCallable(FileDetails buildFile, FileDetails settingsFile) {
-            this.buildFile = buildFile;
-            this.settingsFile = settingsFile;
+        private final String skippedMsg;
+
+        private InitBuildDependsOnCallable(boolean allowFileOverwrite, String skippedMsg) {
+            this.allowFileOverwrite = allowFileOverwrite;
+            this.skippedMsg = skippedMsg;
         }
 
         @Override
         public String call() {
-            if (reasonToSkip(buildFile, settingsFile) == null) {
+            if (allowFileOverwrite || skippedMsg == null) {
                 return "wrapper";
             } else {
                 return null;
@@ -110,16 +128,22 @@ public class BuildInitPlugin implements Plugin<Project> {
         }
     }
 
-    private static String reasonToSkip(FileDetails buildFile, FileDetails settingsFile) {
+    private static String reasonToSkip(FileDetails projectDir, FileDetails buildFile, FileDetails settingsFile) {
+        try {
+            if (FileUtils.isEmptyDirectory(projectDir.file)) {
+                return null;
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
         if (buildFile != null && buildFile.file.exists()) {
-            return "The build file '" + buildFile.pathForDisplay + "' already exists. Skipping build initialization.";
+            return "The build file '" + buildFile.pathForDisplay + "' already exists. ";
+        } else if (settingsFile != null && settingsFile.file.exists()) {
+            return "The settings file '" + settingsFile.pathForDisplay + "' already exists. ";
+        } else {
+            return "The current directory is not empty. ";
         }
-
-        if (settingsFile != null && settingsFile.file.exists()) {
-            return "The settings file '" + settingsFile.pathForDisplay + "' already exists. Skipping build initialization.";
-        }
-
-        return null;
     }
 
     private static class FileDetails {
