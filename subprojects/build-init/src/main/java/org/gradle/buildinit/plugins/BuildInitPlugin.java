@@ -32,9 +32,7 @@ import org.gradle.internal.file.RelativeFilePathResolver;
 
 import javax.annotation.Nullable;
 import java.io.File;
-import java.io.FileFilter;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.concurrent.Callable;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -59,10 +57,8 @@ public class BuildInitPlugin implements Plugin<Project> {
                 FileDetails buildFileDetails = FileDetails.of(buildFile, resolver);
                 File settingsFile = projectInternal.getGradle().getSettings().getSettingsScript().getResource().getLocation().getFile();
                 FileDetails settingsFileDetails = FileDetails.of(settingsFile, resolver);
-                File projectDir = project.getProjectDir();
-                FileDetails projectDirFileDetails = FileDetails.of(projectDir, resolver);
 
-                String skippedMsg = reasonToSkip(projectDirFileDetails, buildFileDetails, settingsFileDetails);
+                String skippedMsg = reasonToSkip(project.getProjectDir(), buildFileDetails, settingsFileDetails);
                 boolean allowFileOverwrite = false;
                 if (!isNullOrEmpty(skippedMsg)) {
                     UserInputHandler inputHandler = ((ProjectInternal) project).getServices().get(UserInputHandler.class);
@@ -100,7 +96,7 @@ public class BuildInitPlugin implements Plugin<Project> {
         @Override
         public boolean isSatisfiedBy(Task element) {
             if (!allowFileOverwrite && skippedMsg != null) {
-                logger.warn(skippedMsg);
+                logger.warn(skippedMsg + "Skipping build initialization.");
                 return false;
             }
             return true;
@@ -128,9 +124,9 @@ public class BuildInitPlugin implements Plugin<Project> {
         }
     }
 
-    private static String reasonToSkip(FileDetails projectDir, FileDetails buildFile, FileDetails settingsFile) {
+    private static String reasonToSkip(File projectDir, FileDetails buildFile, FileDetails settingsFile) {
         try {
-            if (FileUtils.isEmptyDirectory(projectDir.file)) {
+            if (FileUtils.isEmptyDirectory(projectDir)) {
                 return null;
             }
         } catch (IOException e) {
@@ -142,7 +138,7 @@ public class BuildInitPlugin implements Plugin<Project> {
         } else if (settingsFile != null && settingsFile.file.exists()) {
             return "The settings file '" + settingsFile.pathForDisplay + "' already exists. ";
         } else {
-            return "The current directory is not empty. ";
+            return "The directory '" + projectDir.getName() + "' is not empty. ";
         }
     }
 
